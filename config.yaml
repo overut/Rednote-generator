@@ -1,0 +1,80 @@
+# API配置
+api:
+  deepseek:
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-faa673d557e34050bc697474f76db1c0"
+    model: "deepseek-chat"
+    timeout: 30
+    max_retries: 3
+  
+  doubao:
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    api_key: "your_doubao_api_key"
+    model: "doubao-pro-4k"
+    timeout: 30
+    max_retries: 3
+    
+  jimeng:
+    base_url: "https://visual.volcengineapi.com"
+    api_key: "AKLTODZhZGYxMDc2M2ZkNGJkNGJlNDVjMDljOGM4YzFmZDg"
+    secret_key: "WmpRd01XVm1OMk5pTW1ZNU5EVmtaVGcwTW1GbFptVXlORFk0WlRVNE16VQ=="  # 火山引擎的SecretKey，需要从火山引擎控制台获取
+    model: "jimeng_t2i_v31"
+    timeout: 30
+    max_retries: 3
+    
+  tongyi:
+    base_url: "https://dashscope.aliyuncs.com/api/v1"
+    api_key: "your_tongyi_api_key"
+    model: "wanx-v1"
+    timeout: 30
+    max_retries: 3
+
+# 提示词配置
+prompts:
+  topic_generation: |
+    请生成{count}个关于{category}的小红书选题，要求：
+    1. 选题要吸引人，符合小红书平台特点
+    2. 每个选题包含标题、简短描述和相关标签
+    3. 格式如下：
+    1. 标题：xxx
+    描述：xxx
+    标签：#xxx #xxx
+    
+  content_generation: |
+    请为小红书平台写一篇关于{topic}的文案，风格为{style}，要求：
+    1. 标题吸引人，使用表情符号
+    2. 正文内容详细，分段清晰
+    3. 结尾有互动引导
+    4. 包含相关标签
+    5. 格式如下：
+    标题：xxx
+    正文：xxx
+    标签：#xxx #xxx
+    
+  image_generation: |
+    请生成一张关于{topic}的小红书配图，要求：
+    1. 以{topic}文字为主题，精简{topic}文字，图案中主要凸显精简后的文字
+    2. 风格清新、美观、简约
+    2. 色彩鲜明，适合小红书平台
+    3. 主题明确，与文案内容相符
+    4. 背景中添加一个动漫风格图像如emoji表情等和主题搭配
+
+# 输出配置
+output:
+  image_dir: "output/images"
+  content_dir: "output/content"
+  note_format: "json"  # 可选：json, markdown
+
+# UI配置
+ui:
+  theme: "light"
+  language: "zh-CN"
+  page_title: "小红书笔记生成器"
+  page_icon: "✍️"
+
+# 其他配置
+generation:
+  default_topic_count: 5
+  default_image_count: 3
+  max_retries: 3
+  timeout: 30

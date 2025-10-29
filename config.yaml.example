@@ -1,0 +1,78 @@
+# API配置
+api:
+  deepseek:
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-your-deepseek-api-key"
+    model: "deepseek-chat"
+    timeout: 30
+    max_retries: 3
+  
+  doubao:
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+    api_key: "your-doubao-api-key"
+    model: "doubao-pro-4k"
+    timeout: 30
+    max_retries: 3
+    
+  jimeng:
+    base_url: "https://visual.volcengineapi.com"
+    api_key: "your-volcengine-access-key"
+    secret_key: "your-volcengine-secret-key"
+    model: "jimeng_t2i_v31"
+    timeout: 30
+    max_retries: 3
+    
+  tongyi:
+    base_url: "https://dashscope.aliyuncs.com/api/v1"
+    api_key: "sk-your-tongyi-api-key"
+    model: "wanx-v1"
+    timeout: 30
+    max_retries: 3
+
+# 提示词配置
+prompts:
+  topic_generation: |
+    请生成{count}个关于{category}的小红书选题，要求：
+    1. 选题要吸引人，符合小红书平台特点
+    2. 每个选题包含标题、简短描述和相关标签
+    3. 格式如下：
+    1. 标题：xxx
+    描述：xxx
+    标签：#xxx #xxx
+    
+  content_generation: |
+    请为以下小红书选题撰写文案，要求：
+    1. 标题吸引人，使用表情符号
+    2. 正文内容详细，分段清晰
+    3. 结尾有互动引导
+    4. 包含相关标签
+    5. 格式如下：
+    标题：xxx
+    正文：xxx
+    标签：#xxx #xxx
+    
+  image_generation: |
+    请生成一张关于{topic}的小红书配图，要求：
+    1. 风格清新、美观
+    2. 色彩鲜明，适合小红书平台
+    3. 主题明确，与文案内容相符
+
+# 输出配置
+output:
+  image_dir: "output/images"
+  content_dir: "output/content"
+  note_format: "json"  # 可选：json, markdown
+
+# UI配置
+ui:
+  theme: "light"
+  language: "zh-CN"
+  page_title: "小红书笔记生成器"
+  page_icon: "✍️"
+
+# 其他配置
+generation:
+  default_topic_count: 5
+  default_image_count: 3
+  max_retries: 3
+  timeout: 30
