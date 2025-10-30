@@ -399,7 +399,7 @@ class StreamlitUI:
             for i, img in enumerate(note.images):
                 with cols[i % 3]:
                     if os.path.exists(img.image_path):
-                        st.image(img.image_path, caption=f"图片 {i+1}", use_column_width=True)
+                        st.image(img.image_path, caption=f"图片 {i+1}", use_container_width=True)
                     else:
                         st.warning(f"图片不存在: {img.image_path}")
         

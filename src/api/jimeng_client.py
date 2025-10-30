@@ -36,8 +36,8 @@ class JimengAPIClient(ImageGenerationClient):
         self.secret_key = config.get("secret_key", "")
         # 获取火山引擎的AccessKey
         self.access_key = config.get("api_key", "")
-        # 即梦API的模型名称
-        self.model = config.get("model", "jimeng_t2i_v31")
+        # 即梦API的模型名称 - 更新为4.0版本
+        self.model = config.get("model", "jimeng_t2i_v4")
     
     async def generate_response(self, prompt: str, **kwargs) -> str:
         """
@@ -67,19 +67,20 @@ class JimengAPIClient(ImageGenerationClient):
         """
         import aiohttp
         
-        # 构建请求体
-        req_key = kwargs.get("req_key", self.model)
-        use_pre_llm = kwargs.get("use_pre_llm", True)
+        # 构建请求体 - 保持与原API兼容并更新为4.0版本模型
+        req_key = self.model  # 使用4.0版本模型作为req_key
+        # 设置默认参数 - 使用验证有效的社交媒体竖版图片尺寸
+        width = kwargs.get("width", 1080)
+        height = kwargs.get("height", 1920)
         seed = kwargs.get("seed", -1)
-        width = kwargs.get("width", 1328)
-        height = kwargs.get("height", 1328)
+        use_pre_llm = kwargs.get("use_pre_llm", True)
         
         print(f"[INFO] 准备生成图片: prompt={prompt[:50]}..., width={width}, height={height}, model={req_key}")
         logger.info(f"准备生成图片: prompt={prompt[:50]}..., width={width}, height={height}, model={req_key}")
         
-        # 构建请求体
+        # 构建请求体 - 保持原API格式但使用4.0版本模型
         body = {
-            "req_key": req_key,
+            "req_key": req_key,  # 必须参数
             "prompt": prompt,
             "use_pre_llm": use_pre_llm,
             "seed": seed,
@@ -106,7 +107,7 @@ class JimengAPIClient(ImageGenerationClient):
         authorization = self._generate_signature(timestamp, headers, body_hash, "CVSync2AsyncSubmitTask")
         headers["Authorization"] = authorization
         
-        # 发送请求 - 使用异步接口
+        # 发送请求 - 使用原始版本但更新模型参数
         url = f"{self.base_url}?Action=CVSync2AsyncSubmitTask&Version=2022-08-31"
         
         try:
@@ -246,7 +247,7 @@ class JimengAPIClient(ImageGenerationClient):
         import datetime
         import asyncio
         
-        # 构建请求体
+        # 构建请求体 - 添加req_key参数
         body = {
             "req_key": self.model,
             "task_id": task_id
@@ -271,7 +272,7 @@ class JimengAPIClient(ImageGenerationClient):
         authorization = self._generate_signature(timestamp, headers, body_hash, "CVSync2AsyncGetResult")
         headers["Authorization"] = authorization
         
-        # 发送请求
+        # 发送请求 - 使用原始版本
         url = f"{self.base_url}?Action=CVSync2AsyncGetResult&Version=2022-08-31"
         
         for i in range(max_retries):
@@ -302,24 +303,38 @@ class JimengAPIClient(ImageGenerationClient):
                                         logger.info(f"任务状态: {status}, 消息: {status_msg}")
                                         
                                         if status == "done":  # 成功
-                                            if "image_urls" in data and data["image_urls"] is not None:
-                                                image_url = data["image_urls"][0]
-                                                print(f"[INFO] 获取到图片URL: {image_url}")
-                                                logger.info(f"获取到图片URL: {image_url}")
-                                                # 下载图片并返回二进制数据
-                                                return await self._download_image(image_url)
+                                            # 4.0版本接口响应处理
+                                            if "images" in data and data["images"]:
+                                                # 优先检查是否有base64数据
+                                                if "base64" in data["images"][0]:
+                                                    print(f"[INFO] 获取到base64编码图片")
+                                                    logger.info("获取到base64编码图片")
+                                                    return base64.b64decode(data["images"][0]["base64"])
+                                                # 其次检查是否有URL
+                                                elif "url" in data["images"][0]:
+                                                    image_url = data["images"][0]["url"]
+                                                    print(f"[INFO] 获取到图片URL: {image_url}")
+                                                    logger.info(f"获取到图片URL: {image_url}")
+                                                    # 下载图片并返回二进制数据
+                                                    return await self._download_image(image_url)
                                             elif "binary_data_base64" in data:
-                                                # 如果返回的是base64编码，解码后返回二进制数据
+                                                # 兼容旧版接口返回格式
                                                 print(f"[INFO] 获取到base64编码图片")
                                                 logger.info("获取到base64编码图片")
                                                 return base64.b64decode(data["binary_data_base64"][0])
+                                            elif "image_urls" in data and data["image_urls"] is not None:
+                                                # 兼容旧版接口返回格式
+                                                image_url = data["image_urls"][0]
+                                                print(f"[INFO] 获取到图片URL: {image_url}")
+                                                logger.info(f"获取到图片URL: {image_url}")
+                                                return await self._download_image(image_url)
                                             else:
-                                                error_msg = f"响应中未找到图片URL或base64数据: {list(data.keys())}"
+                                                error_msg = f"响应中未找到图片数据: {list(data.keys())}"
                                                 print(f"[ERROR] {error_msg}")
                                                 logger.error(error_msg)
                                                 # 如果在最后一次重试失败，使用备用方案
                                                 if i == max_retries - 1:
-                                                    return await self._generate_fallback_image("", 1328, 1328)
+                                                    return await self._generate_fallback_image("", width, height)
                                                 raise ValueError(error_msg)
                                         elif status == 0:  # 处理中
                                             print(f"[INFO] 任务处理中，等待{retry_interval}秒后重试...")

@@ -96,7 +96,7 @@ class NoteGenerator:
                 # 使用自定义图片提示词
                 for prompt in custom_image_prompts[:image_count]:
                     try:
-                        image_result = await self.image_generator.generate_image(prompt, image_provider)
+                        image_result = await self.image_generator.generate_image(title, prompt, image_provider)
                         images.append(image_result)
                     except Exception as e:
                         logger.error(f"生成图片失败: {prompt}, 错误: {e}")

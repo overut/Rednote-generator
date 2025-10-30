@@ -55,11 +55,12 @@ class ImageGenerator:
         else:
             raise ValueError(f"不支持的API提供商: {provider}")
     
-    async def generate_image(self, prompt: str, provider: str = "jimeng", **kwargs) -> ImageResult:
+    async def generate_image(self, title: str, prompt: str, provider: str = "jimeng", **kwargs) -> ImageResult:
         """
         根据提示词生成图片
         
         Args:
+            title: 图片标题
             prompt: 图片描述提示词
             provider: API提供商
             **kwargs: 其他参数，如width, height等
@@ -73,13 +74,13 @@ class ImageGenerator:
             api_client = await self._get_api_client(provider)
             
             # 构建图片提示词
-            image_prompt = self._build_image_prompt(prompt)
+            image_prompt = self._build_image_prompt(title, prompt)
             
             # 设置默认参数，如果kwargs中已有则使用kwargs中的值
             if "width" not in kwargs:
-                kwargs["width"] = 720
+                kwargs["width"] = 1080
             if "height" not in kwargs:
-                kwargs["height"] = 1280  # 竖屏比例 9:16
+                kwargs["height"] = 1920  # 竖屏比例 9:16，兼容即梦4.0版本API
             
             # 调用API生成图片
             image_data = await api_client.generate_image(
@@ -106,7 +107,7 @@ class ImageGenerator:
             if api_client:
                 await api_client.close()
     
-    def _build_image_prompt(self, base_prompt: str) -> str:
+    def _build_image_prompt(self, title: str, base_prompt: str) -> str:
         """
         构建图片提示词
         
@@ -126,7 +127,7 @@ class ImageGenerator:
         # 替换占位符，支持{topic}和{prompt}两种格式
         try:
             # 尝试使用{topic}占位符
-            image_prompt = prompt_template.format(topic=base_prompt)
+            image_prompt = prompt_template.format(title=title, topic=base_prompt)
         except KeyError:
             try:
                 # 尝试使用{prompt}占位符

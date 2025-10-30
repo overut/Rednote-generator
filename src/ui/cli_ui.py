@@ -47,8 +47,8 @@ class CLIUI:
         image_parser = subparsers.add_parser("image", help="生成图片")
         image_parser.add_argument("--prompt", "-p", required=True, help="图片提示词")
         image_parser.add_argument("--provider", "-pr", choices=["jimeng", "tongyi"], default="jimeng", help="API提供商")
-        image_parser.add_argument("--width", "-w", type=int, default=720, help="图片宽度")
-        image_parser.add_argument("--height", type=int, default=1280, help="图片高度")
+        image_parser.add_argument("--width", "-w", type=int, default=1080, help="图片宽度")
+        image_parser.add_argument("--height", type=int, default=1920, help="图片高度")
         image_parser.add_argument("--output", "-o", help="输出目录路径")
         
         # 生成选题并生成文案命令
