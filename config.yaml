@@ -2,7 +2,7 @@
 api:
   deepseek:
     base_url: "https://api.deepseek.com/v1"
-    api_key: "sk-faa673d557e34050bc697474f76db1c0"
+    api_key: ""
     model: "deepseek-chat"
     timeout: 30
     max_retries: 3
@@ -16,8 +16,8 @@ api:
     
   jimeng:
     base_url: "https://visual.volcengineapi.com"
-    api_key: "AKLTN2RlYjc4ODdhNDM3NDE1NmE0Nzg1NDA3Mjg5MjI4ODI"
-    secret_key: "WXpWa056VmtNV1prT1RNMk5HVTNOamszWldRMVptSmpZbUl4T1dVd056VQ=="  # 火山引擎的SecretKey，需要从火山引擎控制台获取
+    api_key: ""
+    secret_key: ""  # 火山引擎的SecretKey，需要从火山引擎控制台获取
     model: "jimeng_t2i_v40"
     timeout: 30
     max_retries: 3
