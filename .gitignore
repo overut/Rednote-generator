@@ -161,3 +161,8 @@ logs/
 
 # Output directories
 output/
+accounts/
+
+*.png
+*.jpg
+*.jpeg

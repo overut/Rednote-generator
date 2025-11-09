@@ -72,6 +72,6 @@ def get_logger(name: str = "xiaohongshu_generator") -> logging.Logger:
     return logging.getLogger(name)
 
 
-# 默认设置日志
+# 默认设置日志并创建logger实例
 default_log_file = os.path.join("logs", f"generator_{datetime.now().strftime('%Y%m%d')}.log")
-setup_logger(log_file=default_log_file)
+logger = setup_logger(log_file=default_log_file)

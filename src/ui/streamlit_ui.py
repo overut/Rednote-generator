@@ -4,9 +4,11 @@ Streamlit用户界面实现
 
 import streamlit as st
 import os
+import asyncio
+import logging
+import uuid
 import sys
 import json
-import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from PIL import Image
@@ -15,8 +17,14 @@ from PIL import Image
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, project_root)
 
-from src.config import ConfigManager
-from src.generators import TopicGenerator, ContentGenerator, ImageGenerator, NoteGenerator
+# 使用绝对导入
+# 移除不存在的APIClient导入
+from src.config.config_manager import ConfigManager
+from src.generators.topic_generator import TopicGenerator
+from src.generators.content_generator import ContentGenerator
+from src.generators.image_generator import ImageGenerator
+from src.generators.note_generator import NoteResult, NoteGenerator
+from src.publish.publisher import XiaohongshuPublisher, PublishConfig
 
 
 class StreamlitUI:
@@ -29,7 +37,11 @@ class StreamlitUI:
         self.topic_generator = TopicGenerator(self.config_manager)
         self.content_generator = ContentGenerator(self.config_manager)
         self.image_generator = ImageGenerator(self.config_manager)
-    
+        # 添加小红书发布器
+        self.xiaohongshu_publisher = XiaohongshuPublisher(self.config_manager)
+        # 配置日志
+        self.logger = logging.getLogger(__name__)
+
     def run(self):
         """运行Streamlit应用"""
         st.set_page_config(
@@ -46,7 +58,7 @@ class StreamlitUI:
         self._render_sidebar()
         
         # 主界面
-        tab1, tab2, tab3, tab4 = st.tabs(["单篇生成", "批量生成", "历史记录", "设置"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["单篇生成", "批量生成", "历史记录", "发布管理", "设置"])
         
         with tab1:
             self._render_single_generation()
@@ -56,9 +68,25 @@ class StreamlitUI:
         
         with tab3:
             self._render_history()
-        
+            
         with tab4:
+            self._render_publish_management()
+        
+        with tab5:
             self._render_settings()
+            
+    def _render_publish_management(self):
+        """渲染发布管理界面"""
+        publish_option = st.radio(
+            "选择发布方式",
+            ["单篇发布", "批量发布"],
+            key="publish_option"
+        )
+        
+        if publish_option == "单篇发布":
+            self._render_single_publish()
+        else:
+            self._render_batch_publish()
     
     def _render_sidebar(self):
         """渲染侧边栏"""
@@ -381,8 +409,9 @@ class StreamlitUI:
         # 标题
         st.markdown(f"### {note.title}")
         
-        # 内容
-        st.markdown(note.content)
+        # 内容 - 处理换行符
+        content_with_linebreaks = note.content.replace('\n', '  \n')
+        st.markdown(content_with_linebreaks)
         
         # 标签
         if note.hashtags:
@@ -399,7 +428,7 @@ class StreamlitUI:
             for i, img in enumerate(note.images):
                 with cols[i % 3]:
                     if os.path.exists(img.image_path):
-                        st.image(img.image_path, caption=f"图片 {i+1}", use_container_width=True)
+                        st.image(img.image_path, caption=f"图片 {i+1}", width='stretch')
                     else:
                         st.warning(f"图片不存在: {img.image_path}")
         
@@ -507,6 +536,256 @@ class StreamlitUI:
         """保存笔记到历史记录"""
         # 笔记已经在NoteGenerator中保存，这里可以添加额外的处理逻辑
         pass
+
+
+    def _render_single_publish(self):
+        """渲染单篇发布界面"""
+        st.subheader("单篇发布")
+        
+        col1, col2 = st.columns([3, 2])
+        
+        with col1:
+            # 选择历史笔记
+            history_dir = self.config_manager.get_output_config('content_dir') or './output/content'
+            
+            if os.path.exists(history_dir):
+                history_files = [f for f in os.listdir(history_dir) if f.endswith('.json')]
+                
+                if history_files:
+                    # 按修改时间排序
+                    history_files.sort(key=lambda x: os.path.getmtime(os.path.join(history_dir, x)), reverse=True)
+                    
+                    # 准备选项
+                    file_options = {}
+                    for filename in history_files[:20]:  # 只显示最近20条
+                        file_path = os.path.join(history_dir, filename)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                note_data = json.load(f)
+                            file_options[f"{note_data['title']} - {note_data['created_at'][:10]}"] = file_path
+                        except Exception as e:
+                            self.logger.error(f"读取笔记文件失败: {file_path}, 错误: {e}")
+                    
+                    selected_file_label = st.selectbox("选择要发布的笔记", list(file_options.keys()), key="single_publish_file")
+                    
+                    if selected_file_label:
+                        selected_file_path = file_options[selected_file_label]
+                        try:
+                            with open(selected_file_path, 'r', encoding='utf-8') as f:
+                                self.current_publish_note = json.load(f)
+                            
+                            # 显示笔记预览
+                            st.subheader("笔记预览")
+                            st.markdown(f"### {self.current_publish_note['title']}")
+                            
+                            # 处理内容换行
+                            content_with_linebreaks = self.current_publish_note['content'].replace('\n', '  \n')
+                            st.markdown(content_with_linebreaks)
+                            st.markdown(f"**标签**: {' '.join(self.current_publish_note['hashtags'])}")
+                            
+                            # 显示图片
+                            if self.current_publish_note['images']:
+                                st.markdown("**图片**:")
+                                cols = st.columns(min(len(self.current_publish_note['images']), 3))
+                                for i, img in enumerate(self.current_publish_note['images']):
+                                    with cols[i % 3]:
+                                        if os.path.exists(img['path']):
+                                            st.image(img['path'], caption=f"图片 {i+1}", width='stretch')
+                        except Exception as e:
+                            st.error(f"读取笔记失败: {str(e)}")
+                else:
+                    st.info("暂无笔记可发布")
+            else:
+                st.info("暂无笔记可发布")
+        
+        with col2:
+            # 发布设置
+            st.subheader("发布设置")
+            
+            # 获取发布配置（使用默认配置）
+            publish_config = self.config_manager._config.get('publish', {})
+            
+            account_name = st.text_input("账号名称", value=publish_config.get('account_name', ''), key="single_account_name")
+            enable_comments = st.checkbox("开启评论", value=publish_config.get('enable_comments', True), key="single_enable_comments")
+            sync_to_other_platforms = st.checkbox("同步到其他平台", value=publish_config.get('sync_to_other_platforms', False), key="single_sync_platforms")
+            
+            # 发布按钮
+            if st.button("发布到小红书", type="primary", key="single_publish_button"):
+                if not hasattr(self, 'current_publish_note'):
+                    st.error("请先选择要发布的笔记")
+                    return
+                
+                with st.spinner("正在发布到小红书..."):
+                    try:
+                        # 准备发布配置
+                        # 确保创建cookies目录并设置cookies文件路径
+                        cookies_dir = os.path.join('accounts', 'cookies')
+                        os.makedirs(cookies_dir, exist_ok=True)
+                        cookies_file = os.path.join(cookies_dir, f"{account_name}.json")
+                        
+                        config = PublishConfig(
+                            account_name=account_name,
+                            cookies_file=cookies_file,
+                            enable_comments=enable_comments,
+                            sync_to_other_platforms=sync_to_other_platforms
+                        )
+                        
+                        # 准备图片路径
+                        image_paths = [img['path'] for img in self.current_publish_note['images'] if os.path.exists(img['path'])]
+                        
+                        # 发布笔记
+                        result = asyncio.run(self.xiaohongshu_publisher.publish_note(
+                            title=self.current_publish_note['title'],
+                            content=self.current_publish_note['content'],
+                            image_paths=image_paths,
+                            hashtags=self.current_publish_note['hashtags'],
+                            config=config
+                        ))
+                        
+                        if result.status == 'success':
+                            st.success(f"发布成功！笔记ID: {result.note_id}")
+                            st.balloons()
+                        else:
+                            st.error(f"发布失败: {result.error_message}")
+                            
+                    except Exception as e:
+                        st.error(f"发布过程出错: {str(e)}")
+                        self.logger.error(f"发布失败: {str(e)}")
+                        
+    def _render_batch_publish(self):
+        """渲染批量发布界面"""
+        st.subheader("📚 批量笔记发布")
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            # 选择多个历史笔记
+            output_config = self.config_manager.get_output_config()
+            history_dir = output_config.get("content_dir", "./output/content")
+            
+            if os.path.exists(history_dir):
+                history_files = [f for f in os.listdir(history_dir) if f.endswith('.json')]
+                
+                if history_files:
+                    # 按修改时间排序
+                    history_files.sort(key=lambda x: os.path.getmtime(os.path.join(history_dir, x)), reverse=True)
+                    
+                    # 准备选项
+                    file_options = {}
+                    for filename in history_files[:30]:  # 只显示最近30条
+                        file_path = os.path.join(history_dir, filename)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                note_data = json.load(f)
+                            file_options[f"{note_data['title']} - {note_data['created_at'][:10]}"] = file_path
+                        except Exception as e:
+                            self.logger.error(f"读取笔记文件失败: {file_path}, 错误: {e}")
+                    
+                    # 多选框
+                    selected_files = st.multiselect("选择要发布的笔记", list(file_options.keys()), key="batch_publish_files")
+                    
+                    if selected_files:
+                        st.info(f"已选择 {len(selected_files)} 篇笔记")
+                        # 显示选中笔记的基本信息
+                        for i, file_label in enumerate(selected_files):
+                            file_path = file_options[file_label]
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    note_data = json.load(f)
+                                st.markdown(f"**{i+1}. {note_data['title']}**")
+                                st.caption(f"标签: {len(note_data['hashtags'])}个, 图片: {len(note_data['images'])}张")
+                            except Exception as e:
+                                st.warning(f"无法读取笔记: {file_label}")
+                else:
+                    st.info("暂无笔记可发布")
+            else:
+                st.info("暂无笔记可发布")
+        
+        with col2:
+            # 批量发布设置
+            st.subheader("发布设置")
+            
+            # 获取发布配置（使用默认配置）
+            publish_config = self.config_manager._config.get('publish', {})
+            
+            account_name = st.text_input("账号名称", value=publish_config.get('account_name', ''), key="batch_account_name")
+            enable_comments = st.checkbox("开启评论", value=publish_config.get('enable_comments', True), key="batch_enable_comments")
+            sync_to_other_platforms = st.checkbox("同步到其他平台", value=publish_config.get('sync_to_other_platforms', False), key="batch_sync_platforms")
+            
+            # 间隔时间
+            interval = st.slider("发布间隔(秒)", min_value=30, max_value=300, value=60, step=10, key="batch_interval")
+            
+            # 批量发布按钮
+            if st.button("批量发布到小红书", type="primary", key="batch_publish_button"):
+                if not hasattr(st.session_state, 'batch_publish_files') or not st.session_state.batch_publish_files:
+                    st.error("请先选择要发布的笔记")
+                    return
+                
+                with st.spinner("正在批量发布到小红书..."):
+                    try:
+                        # 准备发布配置
+                        # 确保创建cookies目录并设置cookies文件路径
+                        cookies_dir = os.path.join('accounts', 'cookies')
+                        os.makedirs(cookies_dir, exist_ok=True)
+                        cookies_file = os.path.join(cookies_dir, f"{account_name}.json")
+                        
+                        config = PublishConfig(
+                            account_name=account_name,
+                            cookies_file=cookies_file,
+                            enable_comments=enable_comments,
+                            sync_to_other_platforms=sync_to_other_platforms
+                        )
+                        
+                        # 准备笔记数据
+                        notes_to_publish = []
+                        for file_label in st.session_state.batch_publish_files:
+                            file_path = file_options[file_label]
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    note_data = json.load(f)
+                                
+                                # 准备图片路径
+                                image_paths = [img['path'] for img in note_data['images'] if os.path.exists(img['path'])]
+                                
+                                notes_to_publish.append({
+                                    'title': note_data['title'],
+                                    'content': note_data['content'],
+                                    'image_paths': image_paths,
+                                    'hashtags': note_data['hashtags']
+                                })
+                            except Exception as e:
+                                st.warning(f"跳过无法读取的笔记: {file_label}")
+                                continue
+                        
+                        # 批量发布
+                        results = asyncio.run(self.xiaohongshu_publisher.batch_publish_notes(
+                            notes=notes_to_publish,
+                            config=config,
+                            interval_seconds=interval
+                        ))
+                        
+                        # 显示结果统计
+                        success_count = sum(1 for r in results if r.status == 'success')
+                        failed_count = len(results) - success_count
+                        
+                        st.markdown(f"### 发布结果")
+                        st.markdown(f"**成功**: {success_count} 篇")
+                        st.markdown(f"**失败**: {failed_count} 篇")
+                        
+                        # 显示详细结果
+                        with st.expander("查看详细结果"):
+                            for i, result in enumerate(results):
+                                if result.status == 'success':
+                                    st.success(f"笔记 {i+1} 发布成功！ID: {result.note_id}")
+                                else:
+                                    st.error(f"笔记 {i+1} 发布失败: {result.error_message}")
+                                    
+                        if success_count > 0:
+                            st.balloons()
+                            
+                    except Exception as e:
+                        st.error(f"批量发布过程出错: {str(e)}")
+                        self.logger.error(f"批量发布失败: {str(e)}")
 
 
 def main():
