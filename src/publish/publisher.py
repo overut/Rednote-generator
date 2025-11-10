@@ -9,6 +9,7 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 from src.config.config_manager import ConfigManager
 from src.publish.browser_manager import BrowserManager, get_browser_manager
 from src.publish.publish_utils import publish_utils
+from src.publish.login_optimizer import LoginOptimizer, get_login_optimizer
 from src.utils.logger import logger
 
 
@@ -46,6 +47,7 @@ class XiaohongshuPublisher:
         """
         self.config_manager = config_manager
         self.browser_manager: BrowserManager = get_browser_manager()
+        self.login_optimizer: LoginOptimizer = get_login_optimizer()
         self.publish_config = self._load_publish_config()
         self.is_initialized = False
     
@@ -103,6 +105,21 @@ class XiaohongshuPublisher:
                 logger.info("初始化浏览器")
                 await self.browser_manager.init_browser(self.publish_config.headless_mode)
             
+            # 初始化登录优化器
+            if not hasattr(self, 'login_optimizer') or self.login_optimizer is None:
+                from src.publish.login_optimizer import get_login_optimizer
+                logger.info("获取登录优化器实例")
+                self.login_optimizer = get_login_optimizer()
+                
+                if self.login_optimizer is None:
+                    logger.error("获取登录优化器失败: 返回None")
+                    return False
+                    
+                logger.info("成功获取登录优化器实例")
+            
+            # 初始化登录优化器
+            await self.login_optimizer.initialize(self.browser_manager)
+            
             # 加载cookies
             logger.info("加载cookies")
             await self.browser_manager.load_cookies(self.publish_config.cookies_file)
@@ -114,6 +131,7 @@ class XiaohongshuPublisher:
             logger.error(f"初始化发布器失败: {e}")
             # 重置浏览器管理器，下次尝试重新获取
             self.browser_manager = None
+            self.login_optimizer = None
             return False
     
     async def publish_note(self, note_result=None, 
@@ -249,7 +267,13 @@ class XiaohongshuPublisher:
                     logger.info("没有图片需要上传")
                 
                 # 等待图片上传后进入编辑页面
-                await page.wait_for_load_state('networkidle', timeout=30000)
+                try:
+                    # 减少超时时间，避免长时间等待
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                except Exception as e:
+                    logger.warning(f"等待网络空闲状态超时，继续执行: {e}")
+                    # 不抛出异常，继续执行
+                
                 await asyncio.sleep(3)  # 额外等待确保页面完全加载
                 
                 # 填充内容（标题和正文）
@@ -421,6 +445,37 @@ class XiaohongshuPublisher:
     
     async def _login_if_needed(self, page: Page) -> bool:
         """如果需要，执行登录操作
+        
+        Args:
+            page: Playwright页面实例
+            
+        Returns:
+            bool: 是否已登录
+        """
+        # 优先使用登录优化器处理登录逻辑
+        if hasattr(self, 'login_optimizer') and self.login_optimizer is not None:
+            try:
+                logger.info("使用登录优化器处理登录逻辑...")
+                # 使用登录优化器确保登录状态
+                login_result = await self.login_optimizer.ensure_login(
+                    page, 
+                    self.browser_manager, 
+                    self.publish_config.cookies_file
+                )
+                
+                if login_result:
+                    logger.info("登录优化器成功处理登录")
+                    return True
+                else:
+                    logger.warning("登录优化器处理失败，将使用原始登录逻辑")
+            except Exception as e:
+                logger.warning(f"登录优化器处理出错: {e}，将使用原始登录逻辑")
+        
+        # 原始登录逻辑作为后备方案
+        return await self._login_if_needed_fallback(page)
+    
+    async def _login_if_needed_fallback(self, page: Page) -> bool:
+        """原始登录逻辑，作为登录优化器的后备方案
         
         Args:
             page: Playwright页面实例
@@ -721,12 +776,13 @@ class XiaohongshuPublisher:
                             logging.debug(f"尝试标题选择器: {selector}")
                             await page.wait_for_selector(selector, timeout=1000)
                             
-                            # 尝试多种方式填充标题
-                            fill_success = await self._fill_with_typing(page, selector, title_text[:50])
+                            # 优先使用JavaScript方式填充标题，因为根据用户反馈这是最有效的方式
+                            fill_success = await self._fill_with_js(page, selector, title_text[:50])
+                            if not fill_success:
+                                # 如果JavaScript失败，再尝试其他方式
+                                fill_success = await self._fill_with_typing(page, selector, title_text[:50])
                             if not fill_success:
                                 fill_success = await self._fill_directly(page, selector, title_text[:50])
-                            if not fill_success:
-                                fill_success = await self._fill_with_js(page, selector, title_text[:50])
                             
                             if fill_success:
                                 # 尝试按Tab键移动到下一个字段
@@ -1010,16 +1066,41 @@ class XiaohongshuPublisher:
             except Exception as e:
                 logger.warning(f"点击内容输入框失败: {e}")
             
-            # 方式1: 尝试模拟打字输入
-            if not fill_success:
-                try:
-                    logger.debug("尝试方式1: 模拟用户打字")
-                    await publish_utils.simulate_user_typing(page, content_selector, content)
-                    fill_success = True
-                    logger.info("通过模拟用户打字完成内容填充")
-                except Exception as e:
-                    logger.warning(f"模拟打字失败: {e}")
+            # 优先使用JavaScript方式填充内容，因为这种方式通常更可靠
+            try:
+                logger.debug("尝试方式1: 使用JavaScript填充")
+                # 检查选择器类型
+                if '>>' in content_selector:
+                    # Playwright选择器，不能直接用于JavaScript
+                    logger.warning("内容选择器包含Playwright语法，跳过JavaScript填充")
+                    raise Exception("Playwright选择器不能用于JavaScript")
+                
+                # 对于不同类型的输入框使用不同的填充方法
+                if 'textarea' in content_selector.lower():
+                    # 对于textarea，使用value属性，保留换行符
+                    await page.evaluate(f"document.querySelector('{content_selector}').value = `{content.replace('`', '\\`')}`;")
+                    # 触发输入事件
+                    await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('input', { bubbles: true }));")
+                elif '[contenteditable="true"]' in content_selector or 'div' in content_selector.lower():
+                    # 对于可编辑的div，使用innerHTML并保留换行符
+                    # 将换行符转换为<br>标签以在HTML中正确显示
+                    content_with_br = content.replace('\n', '<br>')
+                    await page.evaluate(f"document.querySelector('{content_selector}').innerHTML = `{content_with_br.replace('`', '\\`')}`;")
+                    # 触发输入事件
+                    await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('input', { bubbles: true }));")
+                else:
+                    await page.evaluate(f"document.querySelector('{content_selector}').value = `{content.replace('`', '\\`')}`;")
+                
+                # 触发必要的事件
+                await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('input', {{ bubbles: true }}));")
+                await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('change', {{ bubbles: true }}));")
+                
+                fill_success = True
+                logger.info("通过JavaScript完成内容填充")
+            except Exception as e:
+                logger.warning(f"JavaScript填充失败: {e}")
             
+            # 如果JavaScript失败，再尝试其他方式
             # 方式2: 尝试直接填充
             if not fill_success:
                 try:
@@ -1030,40 +1111,15 @@ class XiaohongshuPublisher:
                 except Exception as e:
                     logger.warning(f"直接填充失败: {e}")
             
-            # 方式3: 尝试使用evaluate执行JavaScript填充
+            # 方式3: 尝试模拟打字输入
             if not fill_success:
                 try:
-                    logger.debug("尝试方式3: 使用JavaScript填充")
-                    # 检查选择器类型
-                    if '>>' in content_selector:
-                        # Playwright选择器，不能直接用于JavaScript
-                        logger.warning("内容选择器包含Playwright语法，跳过JavaScript填充")
-                        raise Exception("Playwright选择器不能用于JavaScript")
-                    
-                    # 对于不同类型的输入框使用不同的填充方法
-                    if 'textarea' in content_selector.lower():
-                        # 对于textarea，使用value属性，保留换行符
-                        await page.evaluate(f"document.querySelector('{content_selector}').value = `{content.replace('`', '\\`')}`;")
-                        # 触发输入事件
-                        await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('input', { bubbles: true }));")
-                    elif '[contenteditable="true"]' in content_selector or 'div' in content_selector.lower():
-                        # 对于可编辑的div，使用innerHTML并保留换行符
-                        # 将换行符转换为<br>标签以在HTML中正确显示
-                        content_with_br = content.replace('\n', '<br>')
-                        await page.evaluate(f"document.querySelector('{content_selector}').innerHTML = `{content_with_br.replace('`', '\\`')}`;")
-                        # 触发输入事件
-                        await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('input', { bubbles: true }));")
-                    else:
-                        await page.evaluate(f"document.querySelector('{content_selector}').value = `{content.replace('`', '\\`')}`;")
-                    
-                    # 触发必要的事件
-                    await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('input', {{ bubbles: true }}));")
-                    await page.evaluate(f"document.querySelector('{content_selector}').dispatchEvent(new Event('change', {{ bubbles: true }}));")
-                    
+                    logger.debug("尝试方式3: 模拟用户打字")
+                    await publish_utils.simulate_user_typing(page, content_selector, content)
                     fill_success = True
-                    logger.info("通过JavaScript完成内容填充")
+                    logger.info("通过模拟用户打字完成内容填充")
                 except Exception as e:
-                    logger.warning(f"JavaScript填充失败: {e}")
+                    logger.warning(f"模拟打字失败: {e}")
             
             # 方式4: 尝试通过选择器获取元素后填充
             if not fill_success:
@@ -1686,7 +1742,7 @@ class XiaohongshuPublisher:
             if upload_complete:
                 logger.info("所有图片上传完成")
                 # 等待页面跳转或加载完成
-                await asyncio.sleep(5)  # 增加等待时间确保页面完全加载
+                await asyncio.sleep(3)  # 减少等待时间从5秒到3秒
                 
                 # 新增：确认上传结果的额外检查
                 try:
@@ -3078,18 +3134,41 @@ class XiaohongshuPublisher:
             publish_success = False
             note_id = None
             start_time = time.time()
-            max_wait_time = 60  # 延长等待时间到60秒
+            max_wait_time = 30  # 减少等待时间到30秒
+            check_interval = 0.5  # 减少检查间隔到0.5秒
+            fast_check_count = 0  # 快速检查计数器
+            fast_check_limit = 10  # 前10次使用快速检查模式
             
             # 循环检查发布状态
             while time.time() - start_time < max_wait_time:
                 # 检查是否有成功提示
-                for indicator in success_indicators:
+                # 前10次检查只检查最常见的指示器，加快响应速度
+                if fast_check_count < fast_check_limit:
+                    # 快速检查模式：只检查最常见的成功指示器
+                    priority_indicators = [
+                        'text=发布成功',
+                        'text=笔记已发布',
+                        'text=发布完成',
+                        'url=**/success**',
+                        'url=**/note/**',
+                        'url=**/explore/**'
+                    ]
+                    indicators_to_check = priority_indicators
+                    timeout = 500  # 快速检查使用更短的超时
+                else:
+                    # 全面检查模式：检查所有指示器
+                    indicators_to_check = success_indicators
+                    timeout = 1000  # 正常检查使用标准超时
+                
+                fast_check_count += 1
+                
+                for indicator in indicators_to_check:
                     try:
                         # 处理不同类型的指示器
                         if indicator.startswith('text='):
                             # 文本内容检查
                             text = indicator[5:]  # 移除 'text=' 前缀
-                            if await page.locator(f"text={text}").is_visible(timeout=1000):
+                            if await page.locator(f"text={text}").is_visible(timeout=timeout):
                                 logger.info(f"检测到发布成功文本: {text}")
                                 publish_success = True
                                 break
@@ -3110,7 +3189,7 @@ class XiaohongshuPublisher:
                                 break
                         else:
                             # CSS选择器检查
-                            if await page.is_visible(indicator, timeout=1000):
+                            if await page.is_visible(indicator, timeout=timeout):
                                 logger.info(f"检测到发布成功提示: {indicator}")
                                 publish_success = True
                                 break
@@ -3156,7 +3235,7 @@ class XiaohongshuPublisher:
                     for error_selector in error_selectors:
                         if error_selector.startswith('text='):
                             text = error_selector[5:]
-                            if await page.locator(f"text={text}").is_visible(timeout=1000):
+                            if await page.locator(f"text={text}").is_visible(timeout=timeout):
                                 logger.error(f"检测到发布错误: {text}")
                                 raise RuntimeError(f"发布失败: {text}")
                         else:
@@ -3189,12 +3268,12 @@ class XiaohongshuPublisher:
                     for indicator in list_indicators:
                         if indicator.startswith('text='):
                             text = indicator[5:]
-                            if await page.locator(f"text={text}").is_visible(timeout=1000):
+                            if await page.locator(f"text={text}").is_visible(timeout=timeout):
                                 logger.info(f"检测到已返回笔记列表页面: {text}")
                                 publish_success = True
                                 break
                         else:
-                            if await page.is_visible(indicator, timeout=1000):
+                            if await page.is_visible(indicator, timeout=timeout):
                                 logger.info(f"检测到已返回笔记列表页面: {indicator}")
                                 publish_success = True
                                 break
@@ -3204,7 +3283,7 @@ class XiaohongshuPublisher:
                 except Exception as e:
                     logger.debug(f"检查笔记列表页面时出错: {e}")
                 
-                await asyncio.sleep(1)
+                await asyncio.sleep(check_interval)
             
             # 如果检测到发布成功
             if publish_success:
@@ -3461,6 +3540,59 @@ class XiaohongshuPublisher:
             
             logger.info(f"标题长度: {len(title)}, 内容长度: {len(content)}")
             
+            # 智能选择器检测函数 - 预先检测选择器有效性
+            async def smart_selector_check(page, selectors, timeout=500):
+                """智能检测选择器，返回可见且可交互的选择器列表"""
+                valid_selectors = []
+                try:
+                    # 使用JavaScript快速检测所有选择器
+                    results = await page.evaluate(f'''(selectors) => {{
+                        return selectors.map(selector => {{
+                            try {{
+                                const elements = document.querySelectorAll(selector);
+                                for (const element of elements) {{
+                                    // 检查元素是否可见和可交互
+                                    const style = window.getComputedStyle(element);
+                                    const isVisible = style.display !== 'none' && 
+                                                     style.visibility !== 'hidden' && 
+                                                     element.offsetWidth > 0 && 
+                                                     element.offsetHeight > 0;
+                                    
+                                    if (isVisible) {{
+                                        // 检查是否可交互
+                                        const isEditable = element.tagName.toLowerCase() === 'input' || 
+                                                         element.tagName.toLowerCase() === 'textarea' || 
+                                                         element.isContentEditable || 
+                                                         element.getAttribute('contenteditable') === 'true';
+                                        
+                                        if (isEditable) {{
+                                            return {{ selector, valid: true, tagName: element.tagName, type: element.type || 'N/A' }};
+                                        }}
+                                    }}
+                                }}
+                                return {{ selector, valid: false }};
+                            }} catch (e) {{
+                                return {{ selector, valid: false, error: e.message }};
+                            }}
+                        }});
+                    }}''', selectors)
+                    
+                    # 过滤出有效的选择器
+                    for result in results:
+                        if result.get('valid', False):
+                            valid_selectors.append(result['selector'])
+                            logger.debug(f"有效选择器: {result['selector']} ({result.get('tagName', 'unknown')})")
+                        else:
+                            logger.debug(f"无效选择器: {result['selector']}")
+                    
+                    logger.info(f"智能检测完成，找到 {len(valid_selectors)}/{len(selectors)} 个有效选择器")
+                    return valid_selectors
+                    
+                except Exception as e:
+                    logger.warning(f"智能选择器检测失败: {e}")
+                    # 如果智能检测失败，返回原始选择器列表
+                    return selectors
+            
             # 定义标题选择器列表（基于截图优化适配小红书最新界面）
             title_selectors = [
             # 小红书最新界面标题选择器 - 基于截图优化
@@ -3563,147 +3695,132 @@ class XiaohongshuPublisher:
                 logger.info("开始填充标题")
                 title_input_found = False
                 
-                # 1. 优先使用选择器列表尝试填充标题
-                for selector in title_selectors:
-                    try:
-                        # 尝试等待元素出现
-                        try:
-                            await page.wait_for_selector(selector, timeout=2000)
-                        except:
-                            # 超时则尝试直接查找
-                            element = await page.query_selector(selector)
-                            if not element:
-                                continue
-                        
-                        # 检查元素是否可见且可交互
-                        element = await page.query_selector(selector)
-                        if element:
-                            is_visible = await page.evaluate('(el) => el.offsetParent !== null && el.style.display !== "none" && el.style.visibility !== "hidden" && !el.disabled', element)
-                            if not is_visible:
-                                logger.debug(f"标题选择器 {selector} 元素不可见或禁用")
-                                continue
-                        else:
-                            logger.debug(f"标题选择器 {selector} 未找到元素")
-                            continue
-                        
-                        # 先点击激活输入框
-                        await page.click(selector)
-                        
-                        # 清空输入框并输入标题
-                        await page.fill(selector, '')
-                        
-                        # 使用分段打字方式输入标题
-                        await publish_utils.simulate_user_typing(page, selector, title)
-                        
-                        # 验证是否成功输入
-                        element = await page.query_selector(selector)
-                        input_value = await page.evaluate('(element) => element.value || ""', element)
-                        
-                        if input_value.strip() == title.strip():
-                            logger.info(f"标题填充成功，使用选择器: {selector}")
-                            title_input_found = True
-                            break
-                    except Exception as e:
-                        logger.debug(f"尝试标题选择器 {selector} 失败: {e}")
-                        continue
-            
-                # 2. 如果选择器列表失败，尝试使用JavaScript查找和填充
-                if not title_input_found:
-                    logger.info("尝试使用JavaScript查找并填充标题")
-                    try:
-                        title_filled = await page.evaluate('''(title) => {
-                            // 查找所有可能的标题输入元素 - 基于截图优化
-                            const titleElements = [
-                                // 小红书最新界面标题选择器 - 基于截图优化优先尝试
-                                document.querySelector('.publish-header input[type="text"]'),
-                                document.querySelector('.publish-header input[placeholder="输入标题"]'),
-                                document.querySelector('.main-content-header .title-input'),
-                                document.querySelector('.input-title-area input'),
-                                document.querySelector('.publish-panel .title-input'),
-                                document.querySelector('[data-testid="publish-title-input"]'),
-                                document.querySelector('[data-cy="publish-title-input"]'),
-                                document.querySelector('#publish-title-input'),
-                                document.querySelector('.publish-title-input'),
-                                // 小红书新界面标题选择器
-                                document.querySelector('.content-header .title-input'),
-                                document.querySelector('.input-area input[placeholder="输入标题"]'),
-                                document.querySelector('.main-title input'),
-                                document.querySelector('.title-container input'),
-                                document.querySelector('[placeholder="输入标题"]'),
-                                document.querySelector('#article-title'),
-                                // 新增小红书最新界面专用选择器
-                                document.querySelector('[name="noteTitle"]'),
-                                document.querySelector('[data-testid="note-title"]'),
-                                document.querySelector('.publish-header .title-input'),
-                                document.querySelector('.editor-header .title-input'),
-                                document.querySelector('.edit-title-input'),
-                                document.querySelector('[data-input="title"]'),
-                                document.querySelector('[data-placeholder="输入标题"]'),
-                                document.querySelector('.title-input-box input'),
-                                document.querySelector('.note-title-input'),
-                                document.querySelector('[aria-label="标题输入框"]'),
-                                document.querySelector('.input-area .title-input'),
-                                document.querySelector('.note-editor-title input'),
-                                // 通用标题选择器
-                                ...document.querySelectorAll('input[placeholder*="标题"]'),
-                                ...document.querySelectorAll('textarea[placeholder*="标题"]'),
-                                ...document.querySelectorAll('input.title, textarea.title'),
-                                ...document.querySelectorAll('[class*="title"][role="textbox"]'),
-                                ...document.querySelectorAll('[id*="title"]')
-                            ].filter(Boolean); // 过滤掉null元素
+                # 1. 优先使用JavaScript方式填充标题（更快、更可靠）
+                logger.info("尝试使用JavaScript查找并填充标题")
+                try:
+                    title_filled = await page.evaluate('''(title) => {
+                        // 查找所有可能的标题输入元素 - 基于截图优化
+                        const titleElements = [
+                            // 小红书最新界面标题选择器 - 基于截图优化优先尝试
+                            document.querySelector('.publish-header input[type="text"]'),
+                            document.querySelector('.publish-header input[placeholder="输入标题"]'),
+                            document.querySelector('.main-content-header .title-input'),
+                            document.querySelector('.input-title-area input'),
+                            document.querySelector('.publish-panel .title-input'),
+                            document.querySelector('[data-testid="publish-title-input"]'),
+                            document.querySelector('[data-cy="publish-title-input"]'),
+                            document.querySelector('#publish-title-input'),
+                            document.querySelector('.publish-title-input'),
+                            // 小红书新界面标题选择器
+                            document.querySelector('.content-header .title-input'),
+                            document.querySelector('.input-area input[placeholder="输入标题"]'),
+                            document.querySelector('.main-title input'),
+                            document.querySelector('.title-container input'),
+                            document.querySelector('[placeholder="输入标题"]'),
+                            document.querySelector('#article-title'),
+                            // 新增小红书最新界面专用选择器
+                            document.querySelector('[name="noteTitle"]'),
+                            document.querySelector('[data-testid="note-title"]'),
+                            document.querySelector('.publish-header .title-input'),
+                            document.querySelector('.editor-header .title-input'),
+                            document.querySelector('.edit-title-input'),
+                            document.querySelector('[data-input="title"]'),
+                            document.querySelector('[data-placeholder="输入标题"]'),
+                            document.querySelector('.title-input-box input'),
+                            document.querySelector('.note-title-input'),
+                            document.querySelector('[aria-label="标题输入框"]'),
+                            document.querySelector('.input-area .title-input'),
+                            document.querySelector('.note-editor-title input'),
+                            // 通用标题选择器
+                            ...document.querySelectorAll('input[placeholder*="标题"]'),
+                            ...document.querySelectorAll('textarea[placeholder*="标题"]'),
+                            ...document.querySelectorAll('input.title, textarea.title'),
+                            ...document.querySelectorAll('[class*="title"][role="textbox"]'),
+                            ...document.querySelectorAll('[id*="title"]')
+                        ].filter(Boolean); // 过滤掉null元素
 
-                            for (const element of titleElements) {
-                                    if (element.offsetParent !== null) { // 只找可见元素
-                                        try {
-                                            // 点击激活
-                                            element.click();
+                        for (const element of titleElements) {
+                                if (element.offsetParent !== null) { // 只找可见元素
+                                    try {
+                                        // 点击激活
+                                        element.click();
 
-                                            // 清空并设置值
-                                            const tagName = element.tagName.toLowerCase();
-                                            if (tagName === 'input' || tagName === 'textarea') {
-                                                element.value = '';
-                                                element.value = title;
-                                            } else if (element.isContentEditable || element.getAttribute('contenteditable') === 'true') {
-                                                // 处理可编辑div
-                                                element.innerHTML = '';
-                                                element.focus();
-                                                document.execCommand('insertText', false, title);
-                                            }
-
-                                            // 触发更多事件以确保框架能检测到变更
-                                            element.dispatchEvent(new Event('input', { bubbles: true }));
-                                            element.dispatchEvent(new Event('change', { bubbles: true }));
-                                            element.dispatchEvent(new Event('blur', { bubbles: true }));
-
-                                            // 模拟键盘事件
-                                            element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
-                                            element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
-
-                                            // 添加额外事件
-                                            element.dispatchEvent(new Event('paste', { bubbles: true }));
-
-                                            // 稍微延迟确认效果
-                                            setTimeout(() => {
-                                                if (element.value === title || element.textContent === title) {
-                                                    console.log('标题填充确认成功');
-                                                }
-                                            }, 100);
-
-                                            return true;
-                                        } catch (e) {
-                                            console.error('填充标题出错:', e);
-                                            continue;
+                                        // 清空并设置值
+                                        const tagName = element.tagName.toLowerCase();
+                                        if (tagName === 'input' || tagName === 'textarea') {
+                                            element.value = '';
+                                            element.value = title;
+                                        } else if (element.isContentEditable || element.getAttribute('contenteditable') === 'true') {
+                                            // 处理可编辑div
+                                            element.innerHTML = '';
+                                            element.focus();
+                                            document.execCommand('insertText', false, title);
                                         }
+
+                                        // 触发更多事件以确保框架能检测到变更
+                                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                                        element.dispatchEvent(new Event('change', { bubbles: true }));
+                                        element.dispatchEvent(new Event('blur', { bubbles: true }));
+
+                                        // 模拟键盘事件
+                                        element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+                                        element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
+
+                                        // 添加额外事件
+                                        element.dispatchEvent(new Event('paste', { bubbles: true }));
+
+                                        // 稍微延迟确认效果
+                                        setTimeout(() => {
+                                            if (element.value === title || element.textContent === title) {
+                                                console.log('标题填充确认成功');
+                                            }
+                                        }, 100);
+
+                                        return true;
+                                    } catch (e) {
+                                        console.error('填充标题出错:', e);
+                                        continue;
                                     }
                                 }
-                            return false;
-                        }''', title)
+                            }
+                        return false;
+                    }''', title)
 
-                        if title_filled:
-                            logger.info("通过JavaScript成功填充标题")
-                            title_input_found = True
-                    except Exception as e:
-                        logger.error("JavaScript填充标题失败: {}".format(str(e)))
+                    if title_filled:
+                        logger.info("通过JavaScript成功填充标题")
+                        title_input_found = True
+                except Exception as e:
+                    logger.error("JavaScript填充标题失败: {}".format(str(e)))
+                
+                # 2. 如果JavaScript方式失败，使用智能选择器检测
+                if not title_input_found:
+                    logger.info("使用智能选择器检测填充标题")
+                    # 先进行智能选择器检测
+                    valid_title_selectors = await smart_selector_check(page, title_selectors)
+                    
+                    # 只尝试有效的选择器
+                    for selector in valid_title_selectors:
+                        try:
+                            # 先点击激活输入框
+                            await page.click(selector)
+                            
+                            # 清空输入框并输入标题
+                            await page.fill(selector, '')
+                            
+                            # 使用分段打字方式输入标题
+                            await publish_utils.simulate_user_typing(page, selector, title)
+                            
+                            # 验证是否成功输入
+                            element = await page.query_selector(selector)
+                            input_value = await page.evaluate('(element) => element.value || ""', element)
+                            
+                            if input_value.strip() == title.strip():
+                                logger.info(f"标题填充成功，使用选择器: {selector}")
+                                title_input_found = True
+                                break
+                        except Exception as e:
+                            logger.debug(f"尝试标题选择器 {selector} 失败: {e}")
+                            continue
 
                 # 3. 作为最后的备选方案,使用更通用的方法查找可见的input和textarea
                 if not title_input_found:
@@ -3816,53 +3933,73 @@ class XiaohongshuPublisher:
                 logger.info("开始填充内容")
                 content_input_found = False
                 
-                for selector in content_selectors:
-                    try:
-                        # 尝试等待元素出现
+                # 将选择器分为常见选择器和备选选择器
+                common_selectors = [
+                    'textarea[placeholder*="正文"]', 'textarea[placeholder*="内容"]', 
+                    'textarea[placeholder*="写笔记"]', 'textarea[placeholder*="分享"]',
+                    'div[contenteditable="true"][data-placeholder*="正文"]',
+                    'div[contenteditable="true"][data-placeholder*="内容"]',
+                    'textarea', 'div[contenteditable="true"]'
+                ]
+                
+                # 备选选择器（剩余的选择器）
+                backup_selectors = [s for s in content_selectors if s not in common_selectors]
+                
+                # 使用智能选择器检测函数，优先尝试可能有效的选择器
+                try:
+                    logger.info("使用智能选择器检测内容输入框...")
+                    smart_selectors = await smart_selector_check(page, content_selectors, "内容输入框")
+                    if smart_selectors and smart_selectors != content_selectors:
+                        logger.info(f"智能检测到 {len(smart_selectors)} 个有效内容选择器")
+                        content_selectors = smart_selectors
+                except Exception as e:
+                    logger.warning(f"智能选择器检测失败: {e}")
+                
+                # 使用智能检测后的选择器列表进行填充
+                if not content_input_found:
+                    logger.info(f"使用智能检测后的选择器列表进行填充，共 {len(content_selectors)} 个选择器")
+                    for selector in content_selectors:
                         try:
-                            await page.wait_for_selector(selector, timeout=3000)
-                        except:
-                            # 超时则尝试直接查找
+                            # 直接尝试查找元素，无需等待
                             element = await page.query_selector(selector)
                             if not element:
                                 continue
-                        
-                        # 根据元素类型使用不同的填充方法
-                        element = await page.query_selector(selector)
-                        element_type = await page.evaluate('(element) => element.tagName.toLowerCase()', element)
-                        
-                        if element_type == 'textarea' or element_type == 'input':
-                            # 对于textarea和input元素
-                            await page.fill(selector, '')
                             
-                            # 使用分段打字方式输入内容
-                            await publish_utils.simulate_user_typing(page, selector, content)
-                        else:
-                            # 对于contenteditable元素
+                            # 根据元素类型使用不同的填充方法
+                            element_type = await page.evaluate('(element) => element.tagName.toLowerCase()', element)
+                            
+                            if element_type == 'textarea' or element_type == 'input':
+                                # 对于textarea和input元素
+                                await page.fill(selector, '')
+                                
+                                # 使用分段打字方式输入内容
+                                await publish_utils.simulate_user_typing(page, selector, content)
+                            else:
+                                # 对于contenteditable元素
+                                element = await page.query_selector(selector)
+                                await page.click(selector)
+                                await page.evaluate('''(element, content) => { 
+                                    element.innerHTML = ""; 
+                                    element.focus(); 
+                                    document.execCommand("insertText", false, content); 
+                                    element.dispatchEvent(new Event("input", { bubbles: true }));
+                                }''', element, content)
+                            
+                            # 验证是否成功输入
                             element = await page.query_selector(selector)
-                            await page.click(selector)
-                            await page.evaluate('''(element, content) => { 
-                                element.innerHTML = ""; 
-                                element.focus(); 
-                                document.execCommand("insertText", false, content); 
-                                element.dispatchEvent(new Event("input", { bubbles: true }));
-                            }''', element, content)
-                        
-                        # 验证是否成功输入
-                        element = await page.query_selector(selector)
-                        if element_type == 'textarea' or element_type == 'input':
-                            input_value = await page.evaluate('(element) => element.value || ""', element)
-                        else:
-                            input_value = await page.evaluate('(element) => element.textContent || element.innerText || ""', element)
-                        
-                        if input_value and (content[:50] in input_value or content[-50:] in input_value):
-                            logger.info(f"内容填充成功，使用选择器: {selector}")
-                            content_input_found = True
-                            break
-                        else:
-                            logger.warning(f"内容填充但验证失败，选择器: {selector}")
-                    except Exception as e:
-                        logger.warning(f"填充内容失败，选择器: {selector}, 错误: {e}")
+                            if element_type == 'textarea' or element_type == 'input':
+                                input_value = await page.evaluate('(element) => element.value || ""', element)
+                            else:
+                                input_value = await page.evaluate('(element) => element.textContent || element.innerText || ""', element)
+                            
+                            if input_value and (content[:50] in input_value or content[-50:] in input_value):
+                                logger.info(f"内容填充成功，使用智能检测选择器: {selector}")
+                                content_input_found = True
+                                break
+                            else:
+                                logger.warning(f"内容填充但验证失败，智能检测选择器: {selector}")
+                        except Exception as e:
+                            logger.warning(f"填充内容失败，智能检测选择器: {selector}, 错误: {e}")
                 
                 if not content_input_found:
                     # 尝试使用JavaScript方式填充内容
@@ -4127,4 +4264,41 @@ class XiaohongshuPublisher:
             return True
         except Exception as e:
             logger.warning(f"JavaScript填充失败: {e}")
+            return False
+    
+    async def _fill_directly(self, page, selector, text):
+        """使用Playwright的fill方法直接填充内容
+        
+        Args:
+            page: Playwright页面实例
+            selector: 元素选择器
+            text: 要填充的文本
+            
+        Returns:
+            bool: 是否成功填充
+        """
+        try:
+            # 使用Playwright的fill方法直接填充
+            await page.fill(selector, text)
+            return True
+        except Exception as e:
+            logger.warning(f"直接填充失败: {e}")
+            return False
+    
+    async def _fill_element(self, element, text):
+        """直接填充已获取的元素
+        
+        Args:
+            element: 已获取的页面元素
+            text: 要填充的文本
+            
+        Returns:
+            bool: 是否成功填充
+        """
+        try:
+            # 尝试使用fill方法
+            await element.fill(text)
+            return True
+        except Exception as e:
+            logger.warning(f"元素填充失败: {e}")
             return False

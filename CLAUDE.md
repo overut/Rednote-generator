@@ -33,6 +33,21 @@ python main.py --mode cli note --topic "如何提高工作效率" --category "�
 python main.py --mode cli batch --count 3 --category "生活分享" --style "治愈系" --image-count 1
 ```
 
+**Publishing Commands:**
+```bash
+# Publish a single generated note
+python main.py --mode cli publish --note-file "output/content/note_file.json" --headless false
+
+# Publish with custom settings
+python main.py --mode cli publish --note-file "output/content/note_file.json" --enable-comments false --retry-count 5
+
+# Batch publish multiple notes
+python main.py --mode cli batch-publish --content-dir "output/content" --headless true
+
+# Test publishing (dry run)
+python main.py --mode cli test-publish --note-file "output/content/note_file.json"
+```
+
 **Web Mode:**
 ```bash
 python main.py --mode web --port 8501
@@ -58,6 +73,23 @@ python -m pytest tests/test_generators.py
 pip install -r requirements.txt
 ```
 
+### Quick Start Scripts
+
+**Windows:**
+```bash
+# Interactive launcher with mode selection
+run.bat
+
+# Direct UI launch
+启动UI.bat
+```
+
+**Linux/Mac:**
+```bash
+# Interactive launcher
+./run.sh
+```
+
 ## Architecture Overview
 
 ### Core Module Structure
@@ -77,20 +109,25 @@ The system follows a layered architecture with clear separation of concerns:
    - `image_generator.py`: Generates images based on content using configured prompts
    - `note_generator.py`: Orchestrates the complete note generation workflow
 
-3. **Configuration Layer** (`src/config/`): Centralized configuration management
+3. **Publishing Layer** (`src/publish/`): Automated publishing to Xiaohongshu platform
+   - `publisher.py`: Main publishing orchestrator with browser automation
+   - `browser_manager.py`: Playwright browser instance management and cookie handling
+   - `publish_utils.py`: Utility functions for publishing operations
+
+4. **Configuration Layer** (`src/config/`): Centralized configuration management
    - `config_manager.py`: Loads and manages YAML configuration including API keys, prompts, and output settings
 
-4. **UI Layer** (`src/ui/`): User interfaces
+5. **UI Layer** (`src/ui/`): User interfaces
    - `cli_ui.py`: Command-line interface with multiple subcommands
    - `streamlit_ui.py`: Web-based interface using Streamlit
 
-5. **Utilities** (`src/utils/`): Common utilities
+6. **Utilities** (`src/utils/`): Common utilities
    - `logger.py`: Logging configuration
    - `utils.py`: Helper functions
 
 ### Data Flow
 
-The typical note generation flow:
+**Note Generation Flow:**
 ```
 User Input → NoteGenerator → TopicGenerator (if no topic provided)
                            → ContentGenerator (with topic)
@@ -98,13 +135,24 @@ User Input → NoteGenerator → TopicGenerator (if no topic provided)
                            → Save to output/content/ (JSON)
 ```
 
+**Publishing Flow:**
+```
+Generated Note → XiaohongshuPublisher → BrowserManager → Playwright Automation
+                                                  → Login (if needed)
+                                                  → Fill content & upload images
+                                                  → Set publishing options
+                                                  → Execute publish
+                                                  → Return PublishResult
+```
+
 ### Key Design Patterns
 
 - **Async/Await**: All API calls use asyncio for non-blocking I/O
 - **Retry Logic**: API clients use tenacity for automatic retry with exponential backoff
 - **Factory Pattern**: Generators select appropriate API clients based on provider configuration
-- **Dataclasses**: Structured data models (Topic, Content, ImageResult, NoteResult)
+- **Dataclasses**: Structured data models (Topic, Content, ImageResult, NoteResult, PublishResult)
 - **Configuration-Driven**: All prompts and API settings are externalized in `config.yaml`
+- **Browser Automation**: Playwright-based web automation for publishing with anti-detection measures
 
 ## Configuration
 
@@ -138,6 +186,17 @@ All prompts support variable substitution (e.g., `{topic}`, `{category}`, `{styl
 - `content_dir`: Directory for generated content JSON files (default: `output/content`)
 - `note_format`: Output format (currently JSON)
 
+### Publishing Configuration
+
+The `publish` section in `config.yaml` controls automated publishing behavior:
+- `account_name`: Account identifier for cookie management
+- `headless_mode`: Run browser in headless mode (default: false)
+- `retry_count`: Number of retry attempts for failed publishes (default: 3)
+- `retry_interval`: Delay between retries in seconds (default: 5)
+- `enable_comments`: Whether to allow comments on published posts (default: true)
+- `sync_to_other_platforms`: Cross-platform publishing (default: false)
+- `cookies_dir`: Directory for storing browser cookies (default: "cookies")
+
 ## Important Implementation Details
 
 ### Async Session Management
@@ -169,6 +228,16 @@ Generated notes are saved as JSON files in `output/content/`:
 - Filename format: `{uuid[:8]}_{title}.json`
 - Includes all metadata (providers, timestamps, prompts)
 - Images referenced by path
+
+### Browser Automation for Publishing
+
+The `XiaohongshuPublisher` uses Playwright for automated publishing:
+- **Cookie Management**: Persistent login sessions stored in `cookies/` directory
+- **Anti-Detection**: Realistic user behavior simulation with random delays
+- **Error Recovery**: Automatic retry with exponential backoff for network issues
+- **Headless Mode**: Option for background operation (default: visible browser)
+- **Content Upload**: Automated image upload with drag-and-drop simulation
+- **Form Filling**: Intelligent content entry with proper formatting preservation
 
 ## Development Workflow
 
@@ -210,6 +279,28 @@ Image generation may fail due to:
 
 The system logs errors but continues processing other images/notes in batch mode.
 
+### Publishing Issues
+
+**Login Problems:**
+- Ensure cookies are properly saved in `cookies/` directory
+- Run first publish with `headless: false` to complete manual login
+- Check for account suspension or verification requirements
+
+**Upload Failures:**
+- Verify image files exist and are valid PNG/JPG format
+- Check network stability and file size limits
+- Ensure browser has proper permissions for file uploads
+
+**Browser Automation Errors:**
+- Update Playwright browsers: `playwright install`
+- Check if system meets browser requirements
+- Try running in non-headless mode for debugging
+
+**Content Rejection:**
+- Review content against platform policies
+- Ensure hashtags are appropriate and not spam
+- Check image content compliance with platform guidelines
+
 ### Async Context
 
 When working with generators, always use `await` for async methods:
@@ -221,4 +312,6 @@ note = await note_generator.generate_note(topic="example")
 
 - Generated content: `{uuid[:8]}_{title}.json` in `output/content/`
 - Generated images: `{uuid}.png` in `output/images/`
+- Browser cookies: `{account_name}_cookies.json` in `cookies/`
 - Logs: `generator_{script_name}.log` in `logs/`
+- Test files: `test_*.py` in `tests/` and `tests/publish/`
