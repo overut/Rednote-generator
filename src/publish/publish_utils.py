@@ -198,6 +198,11 @@ class PublishUtils:
                                         // 对于contenteditable元素，还需要插入换行符
                                         if (element.isContentEditable) {
                                             document.execCommand('insertLineBreak', false, null);
+                                        } else if (element.tagName.toLowerCase() === 'textarea') {
+                                            // 对于textarea，直接添加换行符到value
+                                            element.value += '\\n';
+                                            // 触发input事件确保换行符被识别
+                                            element.dispatchEvent(new Event('input', { bubbles: true }));
                                         }
                                         
                                         return true;
@@ -243,8 +248,16 @@ class PublishUtils:
                     const { selector } = params;
                     const element = document.querySelector(selector);
                     if (element) {
-                        element.dispatchEvent(new Event('input', { bubbles: true }));
-                        element.dispatchEvent(new Event('change', { bubbles: true }));
+                        // 对于textarea元素，确保换行符被正确处理
+                        if (element.tagName.toLowerCase() === 'textarea') {
+                            // 触发input事件确保换行符被识别
+                            element.dispatchEvent(new Event('input', { bubbles: true }));
+                            // 触发change事件确保内容被保存
+                            element.dispatchEvent(new Event('change', { bubbles: true }));
+                        } else {
+                            element.dispatchEvent(new Event('input', { bubbles: true }));
+                            element.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
                     }
                 }''',
                 {"selector": selector}

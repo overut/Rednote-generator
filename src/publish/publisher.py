@@ -10,6 +10,7 @@ from src.config.config_manager import ConfigManager
 from src.publish.browser_manager import BrowserManager, get_browser_manager
 from src.publish.publish_utils import publish_utils
 from src.publish.login_optimizer import LoginOptimizer, get_login_optimizer
+from src.publish.account_manager import AccountManager
 from src.utils.logger import logger
 
 
@@ -48,6 +49,7 @@ class XiaohongshuPublisher:
         self.config_manager = config_manager
         self.browser_manager: BrowserManager = get_browser_manager()
         self.login_optimizer: LoginOptimizer = get_login_optimizer()
+        self.account_manager = AccountManager()
         self.publish_config = self._load_publish_config()
         self.is_initialized = False
     
@@ -442,6 +444,54 @@ class XiaohongshuPublisher:
                     logger.error(f"保存cookies失败: {save_error}")
         
         return results
+    
+    def switch_account(self, account_name: str) -> bool:
+        """切换到指定账号
+        
+        Args:
+            account_name: 账号名称
+            
+        Returns:
+            bool: 是否切换成功
+        """
+        try:
+            # 检查账号是否存在
+            if not self.account_manager.account_exists(account_name):
+                logger.error(f"账号 {account_name} 不存在")
+                return False
+            
+            # 更新发布配置中的账号名称
+            self.publish_config.account_name = account_name
+            self.publish_config.cookies_file = f"accounts/cookies/{account_name}.json"
+            
+            # 重置初始化状态，强制重新初始化
+            self.is_initialized = False
+            
+            logger.info(f"已切换到账号: {account_name}")
+            return True
+        except Exception as e:
+            logger.error(f"切换账号失败: {e}")
+            return False
+    
+    def get_available_accounts(self) -> List[str]:
+        """获取所有可用账号列表
+        
+        Returns:
+            List[str]: 账号名称列表
+        """
+        try:
+            return self.account_manager.get_account_names()
+        except Exception as e:
+            logger.error(f"获取账号列表失败: {e}")
+            return []
+    
+    def get_current_account(self) -> str:
+        """获取当前使用的账号名称
+        
+        Returns:
+            str: 当前账号名称
+        """
+        return self.publish_config.account_name
     
     async def _login_if_needed(self, page: Page) -> bool:
         """如果需要，执行登录操作
@@ -4062,8 +4112,17 @@ class XiaohongshuPublisher:
                                             const tagName = element.tagName.toLowerCase();
                                             if (tagName === 'textarea' || tagName === 'input') {
                                                 element.value = '';
-                                                // 使用模板字符串保留换行符
-                                                element.value = `${content}`;
+                                                // 对于textarea，需要确保换行符被正确处理
+                                                if (tagName === 'textarea') {
+                                                    // 使用模板字符串保留换行符
+                                                    element.value = `${content}`;
+                                                    // 触发input事件确保换行符被识别
+                                                    element.dispatchEvent(new Event('input', { bubbles: true }));
+                                                    // 触发change事件确保内容被保存
+                                                    element.dispatchEvent(new Event('change', { bubbles: true }));
+                                                } else {
+                                                    element.value = `${content}`;
+                                                }
                                             } else {
                                                 // 对于可编辑div，使用更可靠的填充方式
                                                 element.innerHTML = '';
@@ -4085,15 +4144,30 @@ class XiaohongshuPublisher:
                                                         }
                                                     }
                                                     
-                                                    // 逐段插入
+                                                    // 逐段插入，正确处理换行符
                                                     chunks.forEach((chunk, index) => {
                                                         setTimeout(() => {
-                                                            document.execCommand('insertText', false, chunk);
+                                                            // 对于包含换行符的块，先按换行符分割
+                                                            const lines = chunk.split('\\n');
+                                                            lines.forEach((line, lineIndex) => {
+                                                                document.execCommand('insertText', false, line);
+                                                                // 如果不是最后一行，插入换行
+                                                                if (lineIndex < lines.length - 1) {
+                                                                    document.execCommand('insertLineBreak', false, null);
+                                                                }
+                                                            });
                                                         }, index * 50);
                                                     });
                                                 } else {
-                                                    // 短内容直接插入，使用innerHTML保留换行
-                                                    element.innerHTML = contentWithBr;
+                                                    // 短内容分段插入，正确处理换行符
+                                                    const lines = content.split('\\n');
+                                                    lines.forEach((line, index) => {
+                                                        document.execCommand('insertText', false, line);
+                                                        // 如果不是最后一行，插入换行
+                                                        if (index < lines.length - 1) {
+                                                            document.execCommand('insertLineBreak', false, null);
+                                                        }
+                                                    });
                                                 }
                                                 
                                                 // 检查是否成功填充，添加更多回退方案
@@ -4244,18 +4318,24 @@ class XiaohongshuPublisher:
                     if (element.tagName.toLowerCase() === 'textarea') {
                         // 对于textarea，使用value属性，保留换行符
                         element.value = text;
+                        // 触发input事件确保换行符被识别
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                        // 触发change事件确保内容被保存
+                        element.dispatchEvent(new Event('change', { bubbles: true }));
                     } else if (element.getAttribute('contenteditable') === 'true' || element.tagName.toLowerCase() === 'div') {
                         // 对于可编辑的div，使用innerHTML并保留换行符
                         // 将换行符转换为<br>标签以在HTML中正确显示
                         const textWithBr = text.replace(/\\n/g, '<br>');
                         element.innerHTML = textWithBr;
+                        // 触发input和change事件
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                        element.dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
                         element.value = text;
+                        // 触发input和change事件
+                        element.dispatchEvent(new Event('input', { bubbles: true }));
+                        element.dispatchEvent(new Event('change', { bubbles: true }));
                     }
-                    
-                    // 触发必要的事件
-                    element.dispatchEvent(new Event('input', { bubbles: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true }));
                     
                     return true;
                 }

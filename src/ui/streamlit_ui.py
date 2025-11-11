@@ -9,6 +9,7 @@ import logging
 import uuid
 import sys
 import json
+import pandas as pd
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from PIL import Image
@@ -487,48 +488,141 @@ class StreamlitUI:
         max_retries = st.slider("最大重试次数", min_value=1, max_value=5, value=generation_config.get('max_retries', 3), key="max_retries")
         timeout = st.slider("超时时间 (秒)", min_value=5, max_value=60, value=generation_config.get('timeout', 30), key="timeout")
         
+        # 账号管理
+        st.subheader("账号管理")
+        
+        # 获取所有账号
+        all_accounts = self.xiaohongshu_publisher.account_manager.get_all_accounts()
+        
+        if all_accounts:
+            # 显示现有账号列表
+            st.write("当前账号列表:")
+            account_data = []
+            for account in all_accounts:
+                status = "✅ 已激活" if account.is_active else "❌ 未激活"
+                last_login = account.last_login_time[:10] if account.last_login_time else "从未登录"
+                account_data.append({
+                    "账号名称": account.account_name,
+                    "显示名称": account.display_name,
+                    "状态": status,
+                    "最后登录": last_login,
+                    "笔记数量": account.notes_count
+                })
+            
+            # 显示账号表格
+            account_df = pd.DataFrame(account_data)
+            st.dataframe(account_df, width='stretch')
+            
+            # 账号操作区域
+            st.write("账号操作:")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # 添加新账号
+                with st.expander("添加新账号", expanded=False):
+                    new_account_name = st.text_input("账号名称", key="new_account_name")
+                    new_display_name = st.text_input("显示名称", key="new_display_name")
+                    
+                    if st.button("添加账号", key="add_account"):
+                        if new_account_name:
+                            display_name = new_display_name if new_display_name else new_account_name
+                            new_account = self.xiaohongshu_publisher.account_manager.add_account(new_account_name, display_name)
+                            st.success(f"成功添加账号: {new_account.account_name}")
+                            st.rerun()
+                        else:
+                            st.error("请输入账号名称")
+            
+            with col2:
+                # 删除账号
+                with st.expander("删除账号", expanded=False):
+                    account_names = [account.account_name for account in all_accounts if account.account_name != "default"]
+                    
+                    if account_names:
+                        account_to_delete = st.selectbox("选择要删除的账号", account_names, key="account_to_delete")
+                        
+                        if st.button("删除账号", key="delete_account"):
+                            if self.xiaohongshu_publisher.account_manager.delete_account(account_to_delete):
+                                st.success(f"成功删除账号: {account_to_delete}")
+                                st.rerun()
+                            else:
+                                st.error(f"删除账号失败: {account_to_delete}")
+                    else:
+                        st.info("无可删除的账号")
+        else:
+            st.info("暂无账号，请添加新账号")
+            
+            # 添加第一个账号
+            with st.expander("添加第一个账号", expanded=True):
+                new_account_name = st.text_input("账号名称", key="first_account_name")
+                new_display_name = st.text_input("显示名称", key="first_display_name")
+                
+                if st.button("添加账号", key="add_first_account"):
+                    if new_account_name:
+                        display_name = new_display_name if new_display_name else new_account_name
+                        new_account = self.xiaohongshu_publisher.account_manager.add_account(new_account_name, display_name)
+                        st.success(f"成功添加账号: {new_account.account_name}")
+                        st.rerun()
+                    else:
+                        st.error("请输入账号名称")
+        
         # 保存配置按钮
         if st.button("保存配置", type="primary", key="save_config"):
             # 更新API配置
-            self.config_manager.update_api_config('deepseek', {
-                'base_url': deepseek_base_url,
-                'api_key': deepseek_api_key,
-                'model': deepseek_model,
-                'timeout': deepseek_timeout,
-                'max_retries': deepseek_max_retries
-            })
-            
-            self.config_manager.update_api_config('doubao', {
-                'base_url': doubao_base_url,
-                'api_key': doubao_api_key,
-                'model': doubao_model,
-                'timeout': doubao_timeout,
-                'max_retries': doubao_max_retries
-            })
-            
-            self.config_manager.update_api_config('jimeng', {
-                'base_url': jimeng_base_url,
-                'api_key': jimeng_api_key,
-                'model': jimeng_model,
-                'timeout': jimeng_timeout,
-                'max_retries': jimeng_max_retries
-            })
-            
-            self.config_manager.update_api_config('tongyi', {
-                'base_url': tongyi_base_url,
-                'api_key': tongyi_api_key,
-                'model': tongyi_model,
-                'timeout': tongyi_timeout,
-                'max_retries': tongyi_max_retries
-            })
+            for api_name, config in [
+                ('deepseek', {
+                    'base_url': deepseek_base_url,
+                    'api_key': deepseek_api_key,
+                    'model': deepseek_model,
+                    'timeout': deepseek_timeout,
+                    'max_retries': deepseek_max_retries
+                }),
+                ('doubao', {
+                    'base_url': doubao_base_url,
+                    'api_key': doubao_api_key,
+                    'model': doubao_model,
+                    'timeout': doubao_timeout,
+                    'max_retries': doubao_max_retries
+                }),
+                ('jimeng', {
+                    'base_url': jimeng_base_url,
+                    'api_key': jimeng_api_key,
+                    'model': jimeng_model,
+                    'timeout': jimeng_timeout,
+                    'max_retries': jimeng_max_retries
+                }),
+                ('tongyi', {
+                    'base_url': tongyi_base_url,
+                    'api_key': tongyi_api_key,
+                    'model': tongyi_model,
+                    'timeout': tongyi_timeout,
+                    'max_retries': tongyi_max_retries
+                })
+            ]:
+                # 确保apis节存在
+                if 'apis' not in self.config_manager._config:
+                    self.config_manager._config['apis'] = {}
+                
+                # 确保API配置存在
+                if api_name not in self.config_manager._config['apis']:
+                    self.config_manager._config['apis'][api_name] = {}
+                
+                # 更新API配置
+                for key, value in config.items():
+                    self.config_manager._config['apis'][api_name][key] = value
             
             # 更新生成配置
-            self.config_manager.update_generation_config({
+            generation_config = {
                 'default_topic_count': default_topic_count,
                 'default_image_count': default_image_count,
                 'max_retries': max_retries,
                 'timeout': timeout
-            })
+            }
+            
+            for key, value in generation_config.items():
+                    self.config_manager.update_config('generation', key, value)
+            
+            # 保存配置到文件
+            self.config_manager.save_config()
             
             st.success("配置已保存")
     
@@ -605,7 +699,44 @@ class StreamlitUI:
             # 获取发布配置（使用默认配置）
             publish_config = self.config_manager._config.get('publish', {})
             
-            account_name = st.text_input("账号名称", value=publish_config.get('account_name', ''), key="single_account_name")
+            # 获取可用账号列表
+            available_accounts = self.xiaohongshu_publisher.get_available_accounts()
+            current_account = self.xiaohongshu_publisher.get_current_account()
+            
+            # 如果有可用账号，显示账号选择下拉框
+            if available_accounts:
+                # 确保当前账号在可用列表中
+                if current_account not in available_accounts:
+                    available_accounts.insert(0, current_account)
+                
+                # 使用会话状态来跟踪账号选择，避免无限循环
+                if 'single_selected_account' not in st.session_state:
+                    st.session_state.single_selected_account = current_account
+                
+                selected_account = st.selectbox(
+                    "选择发布账号", 
+                    available_accounts,
+                    index=available_accounts.index(st.session_state.single_selected_account) if st.session_state.single_selected_account in available_accounts else 0,
+                    key="single_account_select"
+                )
+                
+                # 如果用户选择了不同的账号，切换账号
+                if selected_account != st.session_state.single_selected_account:
+                    if self.xiaohongshu_publisher.switch_account(selected_account):
+                        st.success(f"已切换到账号: {selected_account}")
+                        st.session_state.single_selected_account = selected_account
+                        st.rerun()
+                    else:
+                        st.error(f"切换账号失败: {selected_account}")
+                elif selected_account != current_account:
+                    # 确保发布器使用正确的账号
+                    self.xiaohongshu_publisher.switch_account(selected_account)
+                    st.session_state.single_selected_account = selected_account
+            else:
+                # 如果没有可用账号，使用文本输入框
+                account_name = st.text_input("账号名称", value=publish_config.get('account_name', ''), key="single_account_name")
+                selected_account = account_name
+            
             enable_comments = st.checkbox("开启评论", value=publish_config.get('enable_comments', True), key="single_enable_comments")
             sync_to_other_platforms = st.checkbox("同步到其他平台", value=publish_config.get('sync_to_other_platforms', False), key="single_sync_platforms")
             
@@ -621,10 +752,10 @@ class StreamlitUI:
                         # 确保创建cookies目录并设置cookies文件路径
                         cookies_dir = os.path.join('accounts', 'cookies')
                         os.makedirs(cookies_dir, exist_ok=True)
-                        cookies_file = os.path.join(cookies_dir, f"{account_name}.json")
+                        cookies_file = os.path.join(cookies_dir, f"{selected_account}.json")
                         
                         config = PublishConfig(
-                            account_name=account_name,
+                            account_name=selected_account,
                             cookies_file=cookies_file,
                             enable_comments=enable_comments,
                             sync_to_other_platforms=sync_to_other_platforms
@@ -708,7 +839,44 @@ class StreamlitUI:
             # 获取发布配置（使用默认配置）
             publish_config = self.config_manager._config.get('publish', {})
             
-            account_name = st.text_input("账号名称", value=publish_config.get('account_name', ''), key="batch_account_name")
+            # 获取可用账号列表
+            available_accounts = self.xiaohongshu_publisher.get_available_accounts()
+            current_account = self.xiaohongshu_publisher.get_current_account()
+            
+            # 账号选择
+            if available_accounts:
+                account_options = [""] + available_accounts  # 添加空选项
+                
+                # 使用会话状态来跟踪账号选择，避免无限循环
+                if 'batch_selected_account' not in st.session_state:
+                    st.session_state.batch_selected_account = current_account if current_account in available_accounts else ""
+                
+                account_index = 0 if not st.session_state.batch_selected_account else account_options.index(st.session_state.batch_selected_account) if st.session_state.batch_selected_account in account_options else 0
+                selected_account = st.selectbox(
+                    "选择发布账号", 
+                    options=account_options,
+                    index=account_index,
+                    key="batch_account_select",
+                    help="选择要用于批量发布的账号"
+                )
+                
+                # 如果选择了账号，进行切换
+                if selected_account and selected_account != st.session_state.batch_selected_account:
+                    with st.spinner(f"正在切换到账号: {selected_account}..."):
+                        if self.xiaohongshu_publisher.switch_account(selected_account):
+                            st.success(f"已切换到账号: {selected_account}")
+                            st.session_state.batch_selected_account = selected_account
+                            st.rerun()
+                        else:
+                            st.error(f"切换账号失败: {selected_account}")
+                elif selected_account and selected_account != current_account:
+                    # 确保发布器使用正确的账号
+                    self.xiaohongshu_publisher.switch_account(selected_account)
+                    st.session_state.batch_selected_account = selected_account
+            else:
+                # 如果没有可用账号，使用文本输入框
+                account_name = st.text_input("账号名称", value=publish_config.get('account_name', ''), key="batch_account_name")
+                selected_account = account_name
             enable_comments = st.checkbox("开启评论", value=publish_config.get('enable_comments', True), key="batch_enable_comments")
             sync_to_other_platforms = st.checkbox("同步到其他平台", value=publish_config.get('sync_to_other_platforms', False), key="batch_sync_platforms")
             
@@ -727,10 +895,10 @@ class StreamlitUI:
                         # 确保创建cookies目录并设置cookies文件路径
                         cookies_dir = os.path.join('accounts', 'cookies')
                         os.makedirs(cookies_dir, exist_ok=True)
-                        cookies_file = os.path.join(cookies_dir, f"{account_name}.json")
+                        cookies_file = os.path.join(cookies_dir, f"{selected_account}.json")
                         
                         config = PublishConfig(
-                            account_name=account_name,
+                            account_name=selected_account,
                             cookies_file=cookies_file,
                             enable_comments=enable_comments,
                             sync_to_other_platforms=sync_to_other_platforms
